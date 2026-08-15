@@ -1,0 +1,21 @@
+# Internal maintainer docs (do not publish)
+*.internal.md
+
+# Bundler / gems
+/vendor/bundle/
+/.bundle/
+*.gem
+/pkg/
+Gemfile.lock
+
+# Env
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
