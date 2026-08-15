@@ -1,10 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "lib/ipwho"
-
 Gem::Specification.new do |spec|
   spec.name          = "ipwho"
-  spec.version       = IpwhoApi::VERSION
+  spec.version       = "1.0.0"
   spec.authors       = ["IPWho SDK Contributors"]
   spec.email         = ["info@ipwho.org"]
 
