@@ -221,7 +221,12 @@ module IpwhoApi
     # @option options [String] :base_url Override base URL (default https://api.ipwho.org).
     # @option options [Numeric] :timeout Request timeout in seconds (default 30).
     def initialize(api_key, options = {})
-      raise APIResponseError, "api_key is required" if api_key.nil? || api_key.empty?
+      api_key = api_key.to_s.strip
+      raise APIResponseError, "api_key is required" if api_key.empty?
+      # The key is sent in a header. Reject it here, without repeating it.
+      unless api_key.each_byte.all? { |byte| byte.between?(0x20, 0x7e) }
+        raise APIResponseError, "api_key contains characters that are not allowed"
+      end
 
       @api_key = api_key
       @base_url = (options[:base_url] || DEFAULT_BASE_URL).sub(%r{/+$}, "")

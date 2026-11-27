@@ -39,6 +39,18 @@ class ClientTest < Minitest::Test
     end
   end
 
+  def test_key_with_surrounding_whitespace_is_trimmed
+    url = "http://127.0.0.1:#{@server.addr[1]}"
+    IpwhoApi::Client.new("  #{KEY}\n", base_url: url).lookup("8.8.8.8")
+    assert_equal "Bearer #{KEY}", @requests[0][:headers]["authorization"]
+  end
+
+  def test_key_with_invalid_characters_is_rejected_without_repeating_it
+    error = assert_raises(IpwhoApi::APIResponseError) { IpwhoApi::Client.new("sk.secret_part\nmore") }
+    refute_includes error.message, "secret_part"
+    assert_raises(IpwhoApi::APIResponseError) { IpwhoApi::Client.new("  \n") }
+  end
+
   def test_lookup_maps_the_response
     data = @client.lookup("8.8.8.8").data
     assert_equal "/ip/8.8.8.8", @requests[0][:target]
