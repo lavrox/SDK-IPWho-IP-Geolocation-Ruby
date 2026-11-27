@@ -23,7 +23,7 @@ gem install ipwho
 gem "ipwho"
 ```
 
-Requires Ruby >= 2.5 and Faraday. Client class: `IpwhoApi::Client`.
+Requires Ruby >= 2.5. It uses only the standard library, so there are no other gems to install. Client class: `IpwhoApi::Client`.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ Successful JSON:
 IpwhoApi::IpGeoResponse
 ├── success
 ├── message
-└── data  (GeoData, or OpenStruct on bulk)
+└── data  (GeoData, or BulkData on bulk)
     ├── ip
     ├── geoLocation
     ├── timezone
@@ -54,6 +54,8 @@ IpwhoApi::IpGeoResponse
     ├── userAgent
     └── responseArray   # bulk
 ```
+
+The client sends your API key in the `Authorization` header, so it isn't part of the request URL.
 
 ## Reading the full response (8.8.8.8)
 
@@ -79,9 +81,9 @@ puts tz.abbr, tz.offset, tz.isDst, tz.utc, tz.currentTime
 puts data.flag.flagIcon    # 🇺🇸
 puts data.flag.flagUnicode # U+1F1FA U+1F1F8
 
-puts data.currency.code, data.currency.symbol, data.currency.name
-puts data.currency.namePlural # US dollars
-puts data.currency.hexUnicode
+# currency is nil for some addresses, such as 1.1.1.1
+puts data.currency&.code, data.currency&.symbol, data.currency&.name
+puts data.currency&.namePlural # US dollars
 
 conn = data.connection
 puts conn.asnNumber      # 15169
@@ -99,8 +101,12 @@ me = client.me
 puts me.data.ip
 
 bulk = client.bulk(["8.8.8.8", "1.1.1.1"])
-Array(bulk.data.responseArray).each do |item|
-  puts item.data.ip, item.data.geoLocation.country
+bulk.data.responseArray.each do |row|
+  if row.success
+    puts "#{row.data.ip} #{row.data.geoLocation.country}"
+  else
+    puts "#{row.data.ip} #{row.message}"
+  end
 end
 ```
 
@@ -134,7 +140,7 @@ end
 
 ### `IpwhoApi::Client.new(api_key, options = {})`
 
-Required key (query `apiKey`). `options[:base_url]` default `https://api.ipwho.org`. `options[:timeout]` default `30`.
+The key is required. It is sent as `Authorization: Bearer`. `options[:base_url]` default `https://api.ipwho.org`. `options[:timeout]` default `30`.
 
 ### `lookup(ip, options = {})`
 
@@ -144,7 +150,7 @@ Required key (query `apiKey`). `options[:base_url]` default `https://api.ipwho.o
 
 ### `bulk(ips)`
 
-Per-IP rows on `data.responseArray`.
+Per-IP rows on `data.responseArray`, one `IpGeoResponse` per address. Check each row's `success`. A failed row has a `message`, and its `data` holds only the `ip`.
 
 ### Errors
 
@@ -176,10 +182,15 @@ Wire keys such as `postal_Code` and `flag_Icon` are mapped onto these members.
 ## Testing
 
 ```bash
-IPWHO_API_KEY=your_key ruby test_ipwho.rb
+bundle install
+bundle exec ruby -Ilib test/client_test.rb
 ```
 
-The live check is `test_ipwho.rb`.
+These tests need no API key: they run against a local stand-in server. For a live check, which uses lookups from your quota:
+
+```bash
+IPWHO_API_KEY=your_key ruby test_ipwho.rb
+```
 
 ## Changelog
 

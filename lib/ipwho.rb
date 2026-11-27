@@ -4,7 +4,7 @@
 # ======================
 #
 # Enterprise-grade client for the IPWho IP Geolocation API.
-# Requires Ruby >= 2.5, faraday ~> 1.0, json.
+# Requires Ruby >= 2.5. Uses only the standard library.
 #
 # Endpoints:
 #   - lookup(ip)     — geolocation for a specific IPv4/IPv6 address
@@ -14,9 +14,9 @@
 # API docs: https://api.ipwho.org
 
 require "json"
-require "faraday"
-require "ostruct"
-require "erb"
+require "net/http"
+require "openssl"
+require "uri"
 
 module IpwhoApi
   VERSION = "1.0.0".freeze
@@ -187,20 +187,27 @@ module IpwhoApi
     end
   end
 
+  # The +data+ of a bulk response: one IpGeoResponse per address.
+  BulkData = Struct.new(:responseArray, keyword_init: true)
+
   IpGeoResponse = Struct.new(:success, :data, :message, keyword_init: true) do
     def self.from_hash(hash)
       data_obj = nil
       if hash["data"].is_a?(Hash)
-        # Bulk: normalise responseArray
-        if hash["data"]["responseArray"].is_a?(Array)
-          data_obj = hash["data"].dup
-          data_obj["responseArray"] = hash["data"]["responseArray"].map { |item| IpGeoResponse.from_hash(item) }
-          data_obj = OpenStruct.new(data_obj)
-        else
-          data_obj = GeoData.from_hash(hash["data"])
-        end
+        rows = hash["data"]["responseArray"]
+        data_obj = if rows.is_a?(Array)
+                     BulkData.new(responseArray: rows.map { |row| IpGeoResponse.from_bulk_row(row) })
+                   else
+                     GeoData.from_hash(hash["data"])
+                   end
       end
       new(success: hash["success"], data: data_obj, message: hash["message"])
+    end
+
+    # The API sends bulk rows flat: {success, ip, geoLocation, ...}
+    # or {success: false, ip, message}.
+    def self.from_bulk_row(row)
+      new(success: row["success"], data: GeoData.from_hash(row), message: row["message"])
     end
   end
 
@@ -214,7 +221,12 @@ module IpwhoApi
     # @option options [String] :base_url Override base URL (default https://api.ipwho.org).
     # @option options [Numeric] :timeout Request timeout in seconds (default 30).
     def initialize(api_key, options = {})
-      raise APIResponseError, "api_key is required" if api_key.nil? || api_key.empty?
+      api_key = api_key.to_s.strip
+      raise APIResponseError, "api_key is required" if api_key.empty?
+      # The key is sent in a header. Reject it here, without repeating it.
+      unless api_key.each_byte.all? { |byte| byte.between?(0x20, 0x7e) }
+        raise APIResponseError, "api_key contains characters that are not allowed"
+      end
 
       @api_key = api_key
       @base_url = (options[:base_url] || DEFAULT_BASE_URL).sub(%r{/+$}, "")
@@ -236,7 +248,7 @@ module IpwhoApi
     def lookup(ip, options = {})
       format = options[:format] || "json"
       params = build_params(format, options[:fields])
-      get("/ip/#{ERB::Util.url_encode(ip)}", params, format)
+      get("/ip/#{encode_segment(ip)}", params, format)
     end
 
     # Look up geolocation for the caller's own IP address.
@@ -255,39 +267,60 @@ module IpwhoApi
     # Batch-lookup multiple IP addresses.
     #
     # @param ips [Array<String>] List of IPv4 or IPv6 addresses.
-    # @return [IpwhoApi::IpGeoResponse] Response with data.responseArray of IpGeoResponse.
+    # @return [IpwhoApi::IpGeoResponse] Response with data.responseArray: one
+    #   IpGeoResponse per address. Check each row's success. A failed row has a
+    #   message, and its data holds only the ip.
     # @raise [IpwhoApi::APIResponseError]
     def bulk(ips)
       raise APIResponseError, "ips must not be empty" if ips.nil? || ips.empty?
 
       bulk_param = ips.join(",")
-      params = { apiKey: @api_key }
-      get("/bulk/#{ERB::Util.url_encode(bulk_param)}", params, "json")
+      get("/bulk/#{encode_segment(bulk_param)}", {}, "json")
     end
 
     private
 
-    # Build query parameters.
+    # Percent-encode one path segment.
+    def encode_segment(value)
+      URI.encode_www_form_component(value.to_s).gsub("+", "%20")
+    end
+
+    # Build query parameters. The API key is sent in a header instead.
     def build_params(format, fields)
-      params = { apiKey: @api_key }
+      params = {}
       params[:format] = format if format != "json"
       params[:get]    = fields if fields && !fields.empty?
       params
     end
 
+    # Send one GET request. Any transport failure becomes APIResponseError.
+    def perform(uri)
+      request = Net::HTTP::Get.new(uri)
+      request["Accept"]        = "application/json"
+      request["Authorization"] = "Bearer #{@api_key}"
+      request["User-Agent"]    = "ipwho-ruby-sdk/#{VERSION}"
+
+      Net::HTTP.start(uri.hostname, uri.port,
+                      use_ssl: uri.scheme == "https",
+                      open_timeout: @timeout,
+                      read_timeout: @timeout,
+                      write_timeout: @timeout,
+                      # Net::HTTP would otherwise repeat a timed-out GET.
+                      max_retries: 0) do |http|
+        http.request(request)
+      end
+    rescue StandardError => e
+      raise APIResponseError, "Request failed: #{e.message}"
+    end
+
     # Execute a GET request and return typed response.
     def get(path, params, format)
-      conn = Faraday.new(url: @base_url) do |f|
-        f.headers["Accept"]     = "application/json"
-        f.headers["User-Agent"] = "ipwho-ruby-sdk/#{VERSION}"
-        f.options.timeout       = @timeout
-        f.options.open_timeout  = @timeout
-        f.adapter Faraday.default_adapter
-      end
+      uri = URI.parse("#{@base_url}#{path}")
+      uri.query = URI.encode_www_form(params) unless params.empty?
 
-      response = conn.get(path, params)
-      status   = response.status
-      body     = response.body
+      response = perform(uri)
+      status   = response.code.to_i
+      body     = response.body.to_s.dup.force_encoding(Encoding::UTF_8)
 
       # Rate limit
       raise RateLimitError, error_message(body, status) if status == 429
@@ -316,8 +349,6 @@ module IpwhoApi
       end
 
       IpGeoResponse.from_hash(payload)
-    rescue Faraday::Error => e
-      raise APIResponseError, "Request failed: #{e.message}"
     rescue JSON::ParserError
       raise APIResponseError, "Invalid JSON response"
     end
@@ -339,11 +370,6 @@ end
 # ═══════════════════════════════════════════════════════════════════════
 
 if __FILE__ == $PROGRAM_NAME
-  require "json"
-  require "faraday"
-  require "ostruct"
-  require "erb"
-
   api_key = ENV["IPWHO_API_KEY"] || "sk.xxxx"
   client = IpwhoApi::Client.new(api_key)
 
