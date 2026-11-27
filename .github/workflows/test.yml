@@ -27,3 +27,17 @@ jobs:
           bundler-cache: true
       - run: bundle exec ruby -Ilib test/client_test.rb
       - run: gem build ipwho.gemspec
+
+  oldest:
+    # setup-ruby has no builds this old on current runners, so use the official images.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['2.5', '2.6']
+    container: ruby:${{ matrix.ruby }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bundle install
+      - run: bundle exec ruby -Ilib test/client_test.rb
+      - run: gem build ipwho.gemspec
